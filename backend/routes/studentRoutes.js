@@ -7,6 +7,8 @@ const {
   createStudent,
   updateStudent,
   transferStudent,
+  deactivateStudent,
+  restoreStudent,
   importStudentsExcel,
   previewStudentsExcel,
   exportStudentsExcel,
@@ -39,5 +41,7 @@ router.post('/import-excel', protect, upload.single('file'), importStudentsExcel
 
 router.route('/:id').get(protect, getStudentById).put(protect, updateStudent);
 router.patch('/:id/transfer', protect, transferStudent);
+router.patch('/:id/deactivate', protect, deactivateStudent);
+router.patch('/:id/restore', protect, restoreStudent);
 
 module.exports = router;

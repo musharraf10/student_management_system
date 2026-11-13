@@ -1,8 +1,10 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, memo } from 'react';
+import { createPortal } from 'react-dom';
 import { Link } from 'react-router-dom';
 import studentService from '../../services/studentService';
 import universityService from '../../services/universityService';
 import sectionService from '../../services/sectionService';
+import attendanceDB from '../../services/attendanceDB';
 import { useAuth } from '../../context/AuthContext';
 import StudentImportModal from '../../components/students/StudentImportModal';
 import {
@@ -20,12 +22,162 @@ import {
   ArrowRightLeft,
   FileSpreadsheet,
   CalendarCheck,
+  MoreVertical,
+  Trash2,
+  RotateCcw,
+  AlertTriangle,
+  User,
+  Building2,
+  Layers,
+  History,
+  ShieldAlert,
 } from 'lucide-react';
 
+/**
+ * Three-dot dropdown action menu for individual student rows
+ */
+const StudentRowActionMenu = memo(function StudentRowActionMenu({
+  student,
+  canEdit,
+  canDelete,
+  isSuperAdmin,
+  onOpenTransfer,
+  onOpenDeactivate,
+  onOpenRestore,
+}) {
+  const [open, setOpen] = useState(false);
+  const [coords, setCoords] = useState({ top: 0, left: 0 });
+  const buttonRef = useRef(null);
+
+  const toggle = (e) => {
+    e.stopPropagation();
+    if (!open && buttonRef.current) {
+      const rect = buttonRef.current.getBoundingClientRect();
+      const dropdownHeight = 200;
+      const spaceBelow = window.innerHeight - rect.bottom;
+      const openUpward = spaceBelow < dropdownHeight && rect.top > dropdownHeight;
+      const top = openUpward ? Math.max(8, rect.top - dropdownHeight - 4) : rect.bottom + 4;
+      const left = Math.min(Math.max(8, rect.right - 200), window.innerWidth - 210);
+      setCoords({ top, left });
+    }
+    setOpen((prev) => !prev);
+  };
+
+  useEffect(() => {
+    if (!open) return;
+    const close = () => setOpen(false);
+    window.addEventListener('click', close);
+    window.addEventListener('scroll', close, true);
+    window.addEventListener('resize', close);
+    return () => {
+      window.removeEventListener('click', close);
+      window.removeEventListener('scroll', close, true);
+      window.removeEventListener('resize', close);
+    };
+  }, [open]);
+
+  return (
+    <div className="relative inline-block text-left">
+      <button
+        ref={buttonRef}
+        type="button"
+        onClick={toggle}
+        className="rounded-lg p-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-800 transition cursor-pointer"
+        title="Student Actions"
+        aria-label="Student actions"
+      >
+        <MoreVertical className="h-4 w-4" />
+      </button>
+
+      {open &&
+        createPortal(
+          <div
+            style={{
+              position: 'fixed',
+              top: `${coords.top}px`,
+              left: `${coords.left}px`,
+              zIndex: 9999,
+            }}
+            onClick={(e) => e.stopPropagation()}
+            className="w-48 rounded-xl border border-slate-200 bg-white py-1.5 shadow-xl animate-fade-in text-xs font-medium text-slate-700"
+          >
+            <Link
+              to={`/students/${student._id}/attendance`}
+              onClick={() => setOpen(false)}
+              className="flex items-center gap-2.5 px-3.5 py-2 hover:bg-brand-50 hover:text-brand-900 transition"
+            >
+              <CalendarCheck className="h-4 w-4 text-brand-600 shrink-0" />
+              <span>View Attendance</span>
+            </Link>
+
+            {canEdit && (
+              <Link
+                to={`/students/${student._id}/edit`}
+                onClick={() => setOpen(false)}
+                className="flex items-center gap-2.5 px-3.5 py-2 hover:bg-brand-50 hover:text-brand-900 transition"
+              >
+                <Edit2 className="h-4 w-4 text-brand-600 shrink-0" />
+                <span>Edit Student</span>
+              </Link>
+            )}
+
+            {isSuperAdmin && (
+              <button
+                type="button"
+                onClick={() => {
+                  setOpen(false);
+                  onOpenTransfer(student);
+                }}
+                className="flex w-full items-center gap-2.5 px-3.5 py-2 text-left hover:bg-brand-50 hover:text-brand-900 transition cursor-pointer"
+              >
+                <ArrowRightLeft className="h-4 w-4 text-brand-600 shrink-0" />
+                <span>Transfer Section</span>
+              </button>
+            )}
+
+            <div className="my-1 border-t border-slate-100" />
+
+            {student.status === 'active' ? (
+              canDelete && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOpen(false);
+                    onOpenDeactivate(student);
+                  }}
+                  className="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-red-600 hover:bg-red-50 transition cursor-pointer font-semibold"
+                >
+                  <Trash2 className="h-4 w-4 text-red-500 shrink-0" />
+                  <span>Delete / Deactivate</span>
+                </button>
+              )
+            ) : (
+              canDelete && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOpen(false);
+                    onOpenRestore(student);
+                  }}
+                  className="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-emerald-700 hover:bg-emerald-50 transition cursor-pointer font-semibold"
+                >
+                  <RotateCcw className="h-4 w-4 text-emerald-600 shrink-0" />
+                  <span>Restore Student</span>
+                </button>
+              )
+            )}
+          </div>,
+          document.body
+        )}
+    </div>
+  );
+});
+
 export default function StudentListPage() {
-  const { isSuperAdmin, hasPermission } = useAuth();
+  const { isSuperAdmin, hasPermission, user } = useAuth();
   const canAdd = isSuperAdmin || hasPermission('addStudents');
   const canEdit = isSuperAdmin || hasPermission('editStudents');
+  const canDelete = isSuperAdmin || hasPermission('deleteStudents');
   const canExport = isSuperAdmin || hasPermission('exportReports');
 
   const [students, setStudents] = useState([]);
@@ -69,6 +221,16 @@ export default function StudentListPage() {
   const [isImportOpen, setIsImportOpen] = useState(false);
   const [exporting, setExporting] = useState(false);
 
+  // Deactivate Modal state
+  const [deactivatingStudent, setDeactivatingStudent] = useState(null);
+  const [deactivateReason, setDeactivateReason] = useState('');
+  const [deactivating, setDeactivating] = useState(false);
+  const [hasPendingOfflineRecords, setHasPendingOfflineRecords] = useState(false);
+
+  // Restore Modal state
+  const [restoringStudent, setRestoringStudent] = useState(null);
+  const [restoring, setRestoring] = useState(false);
+
   const fetchData = async () => {
     try {
       setLoading(true);
@@ -102,6 +264,58 @@ export default function StudentListPage() {
   const handleSearchSubmit = (e) => {
     e.preventDefault();
     fetchData();
+  };
+
+  const openDeactivateModal = async (student) => {
+    setDeactivatingStudent(student);
+    setDeactivateReason('');
+    setHasPendingOfflineRecords(false);
+
+    if (user?._id) {
+      try {
+        const pending = await attendanceDB.getAllPendingRecords(user._id);
+        const hasPending = pending.some((r) => r.studentId === student._id);
+        setHasPendingOfflineRecords(hasPending);
+      } catch (err) {
+        console.warn('Failed to inspect local records:', err);
+      }
+    }
+  };
+
+  const handleConfirmDeactivate = async () => {
+    if (!deactivatingStudent) return;
+    try {
+      setDeactivating(true);
+      await studentService.deactivateStudent(deactivatingStudent._id, deactivateReason);
+      setSuccess(`Student "${deactivatingStudent.name}" deactivated successfully`);
+      setDeactivatingStudent(null);
+      fetchData();
+      setTimeout(() => setSuccess(''), 4000);
+    } catch (err) {
+      setError(err.response?.data?.message || 'Failed to deactivate student');
+    } finally {
+      setDeactivating(false);
+    }
+  };
+
+  const openRestoreModal = (student) => {
+    setRestoringStudent(student);
+  };
+
+  const handleConfirmRestore = async () => {
+    if (!restoringStudent) return;
+    try {
+      setRestoring(true);
+      await studentService.restoreStudent(restoringStudent._id);
+      setSuccess(`Student "${restoringStudent.name}" restored to active status successfully`);
+      setRestoringStudent(null);
+      fetchData();
+      setTimeout(() => setSuccess(''), 4000);
+    } catch (err) {
+      setError(err.response?.data?.message || 'Failed to restore student');
+    } finally {
+      setRestoring(false);
+    }
   };
 
   const openCreateModal = () => {
@@ -329,6 +543,45 @@ export default function StudentListPage() {
         </div>
       </div>
 
+      {/* Quick Status Filter Tabs */}
+      <div className="flex flex-wrap items-center gap-2 border-b border-brand-200 pb-2">
+        <button
+          type="button"
+          onClick={() => setStatusFilter('')}
+          className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition cursor-pointer ${
+            statusFilter === ''
+              ? 'bg-brand-900 text-white shadow-xs'
+              : 'text-brand-600 hover:bg-brand-100 hover:text-brand-900'
+          }`}
+        >
+          All Students
+        </button>
+        <button
+          type="button"
+          onClick={() => setStatusFilter('active')}
+          className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition cursor-pointer ${
+            statusFilter === 'active'
+              ? 'bg-emerald-700 text-white shadow-xs'
+              : 'text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200'
+          }`}
+        >
+          <CheckCircle2 className="h-3.5 w-3.5" />
+          <span>Active Students</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => setStatusFilter('inactive')}
+          className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition cursor-pointer ${
+            statusFilter === 'inactive'
+              ? 'bg-slate-700 text-white shadow-xs'
+              : 'text-slate-700 bg-slate-100 hover:bg-slate-200 border border-slate-300'
+          }`}
+        >
+          <XCircle className="h-3.5 w-3.5" />
+          <span>Inactive Students</span>
+        </button>
+      </div>
+
       {/* Students Table */}
       <div className="overflow-hidden rounded-xl border border-brand-200 bg-white shadow-xs">
         <div className="overflow-x-auto">
@@ -422,41 +675,20 @@ export default function StudentListPage() {
                       <div className="flex items-center justify-end gap-1.5">
                         <Link
                           to={`/students/${student._id}/attendance`}
-                          className="rounded p-1.5 text-brand-500 hover:bg-brand-100 hover:text-brand-800 transition-colors"
+                          className="rounded-lg p-1.5 text-brand-600 hover:bg-brand-100 transition-colors"
                           title="View Attendance History"
                         >
-                          <CalendarCheck className="h-3.5 w-3.5" />
+                          <CalendarCheck className="h-4 w-4" />
                         </Link>
-                        {isSuperAdmin && (
-                          <button
-                            onClick={() => openTransferModal(student)}
-                            className="rounded p-1.5 text-brand-500 hover:bg-brand-100 hover:text-brand-800 transition-colors"
-                            title="Transfer Section"
-                          >
-                            <ArrowRightLeft className="h-3.5 w-3.5" />
-                          </button>
-                        )}
-                        {canEdit && (
-                          <Link
-                            to={`/students/${student._id}/edit`}
-                            className="rounded p-1.5 text-brand-600 hover:bg-brand-100 transition-colors"
-                            title="Edit Student"
-                          >
-                            <Edit2 className="h-3.5 w-3.5" />
-                          </Link>
-                        )}
-                        {canEdit && (
-                          <button
-                            onClick={() => toggleStatus(student)}
-                            className={`rounded px-2 py-1 text-[11px] font-medium transition-colors ${
-                              student.status === 'active'
-                                ? 'text-red-700 hover:bg-red-50'
-                                : 'text-emerald-700 hover:bg-emerald-50'
-                            }`}
-                          >
-                            {student.status === 'active' ? 'Deactivate' : 'Activate'}
-                          </button>
-                        )}
+                        <StudentRowActionMenu
+                          student={student}
+                          canEdit={canEdit}
+                          canDelete={canDelete}
+                          isSuperAdmin={isSuperAdmin}
+                          onOpenTransfer={openTransferModal}
+                          onOpenDeactivate={openDeactivateModal}
+                          onOpenRestore={openRestoreModal}
+                        />
                       </div>
                     </td>
                   </tr>
@@ -761,6 +993,182 @@ export default function StudentListPage() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Deactivation Confirmation Modal */}
+      {deactivatingStudent && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-xs animate-fade-in">
+          <div className="w-full max-w-lg rounded-2xl border border-red-200 bg-white p-6 shadow-2xl animate-fade-in">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2.5">
+                <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-red-100 text-red-700">
+                  <Trash2 className="h-5 w-5" />
+                </span>
+                <div>
+                  <h2 className="text-base font-bold text-slate-900">
+                    Deactivate Student
+                  </h2>
+                  <p className="text-xs text-slate-500">
+                    Remove student from active attendance lists
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setDeactivatingStudent(null)}
+                className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="mt-4 space-y-4 text-xs">
+              {/* Student identification card */}
+              <div className="rounded-xl border border-slate-200 bg-slate-50/80 p-3.5 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-500 font-medium">Student Name:</span>
+                  <strong className="text-slate-900 text-sm">{deactivatingStudent.name}</strong>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-500 font-medium">Roll Number:</span>
+                  <span className="font-mono font-semibold text-slate-800">{deactivatingStudent.rollNumber}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-500 font-medium">NIAT ID:</span>
+                  <span className="font-mono font-semibold text-brand-800">{deactivatingStudent.niatId}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-500 font-medium">University:</span>
+                  <span className="font-medium text-slate-800">
+                    {deactivatingStudent.university?.name || deactivatingStudent.university?.code || '—'}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-500 font-medium">Section:</span>
+                  <span className="font-medium text-slate-800">
+                    {deactivatingStudent.section?.name || deactivatingStudent.section?.code || '—'}
+                  </span>
+                </div>
+              </div>
+
+              {/* Offline pending check alert */}
+              {hasPendingOfflineRecords && (
+                <div className="flex items-start gap-2.5 rounded-xl border border-amber-300 bg-amber-50 p-3 text-amber-900">
+                  <AlertTriangle className="h-4 w-4 text-amber-600 shrink-0 mt-0.5" />
+                  <div>
+                    <p className="font-bold">Unsynchronized Offline Attendance Records Detected</p>
+                    <p className="mt-0.5 text-[11px] text-amber-800 leading-relaxed">
+                      There are unsynchronized offline attendance changes stored locally for this student. We strongly recommend synchronizing before deactivating to preserve these records.
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {/* Warning explanation banner */}
+              <div className="flex items-start gap-2.5 rounded-xl border border-red-200 bg-red-50/70 p-3 text-red-900">
+                <ShieldAlert className="h-4 w-4 text-red-600 shrink-0 mt-0.5" />
+                <div className="text-[11px] leading-relaxed">
+                  <span className="font-bold block text-red-950">Important Notice</span>
+                  Deactivating this student will remove them from daily attendance marking sheets, active rosters, and register exports. All historical attendance records, percentages, and audit logs are permanently preserved and can be viewed or restored at any time.
+                </div>
+              </div>
+
+              {/* Optional Reason Input */}
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Reason for Deactivation (Optional)
+                </label>
+                <input
+                  type="text"
+                  value={deactivateReason}
+                  onChange={(e) => setDeactivateReason(e.target.value)}
+                  placeholder="e.g., Transfer to other college, Discontinued course, Left institution"
+                  className="w-full rounded-xl border border-slate-200 bg-white py-2 px-3 text-xs text-slate-900 placeholder:text-slate-400 focus:border-red-600 focus:outline-none"
+                />
+              </div>
+
+              {/* Modal Buttons */}
+              <div className="flex items-center justify-end gap-2.5 pt-3 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setDeactivatingStudent(null)}
+                  disabled={deactivating}
+                  className="rounded-xl border border-slate-200 px-4 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 transition cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleConfirmDeactivate}
+                  disabled={deactivating}
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-red-600 px-4 py-2 text-xs font-semibold text-white hover:bg-red-700 active:scale-98 transition disabled:opacity-50 cursor-pointer shadow-xs"
+                >
+                  {deactivating && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                  <span>{deactivating ? 'Deactivating...' : 'Confirm Deactivation'}</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Restore Confirmation Modal */}
+      {restoringStudent && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-xs animate-fade-in">
+          <div className="w-full max-w-md rounded-2xl border border-emerald-200 bg-white p-6 shadow-2xl animate-fade-in">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2.5">
+                <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-emerald-100 text-emerald-700">
+                  <RotateCcw className="h-5 w-5" />
+                </span>
+                <div>
+                  <h2 className="text-base font-bold text-slate-900">
+                    Restore Student to Roster
+                  </h2>
+                  <p className="text-xs text-slate-500">
+                    Re-enroll student in active section
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setRestoringStudent(null)}
+                className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="mt-4 space-y-4 text-xs">
+              <p className="text-slate-600 leading-relaxed">
+                Are you sure you want to restore{' '}
+                <strong className="text-slate-900">{restoringStudent.name}</strong> (Roll:{' '}
+                <span className="font-mono font-semibold">{restoringStudent.rollNumber}</span>)?
+                The student will immediately reappear on daily attendance marking sheets and active lists.
+              </p>
+
+              <div className="flex items-center justify-end gap-2.5 pt-3 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setRestoringStudent(null)}
+                  disabled={restoring}
+                  className="rounded-xl border border-slate-200 px-4 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 transition cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleConfirmRestore}
+                  disabled={restoring}
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-700 px-4 py-2 text-xs font-semibold text-white hover:bg-emerald-800 active:scale-98 transition disabled:opacity-50 cursor-pointer shadow-xs"
+                >
+                  {restoring && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                  <span>{restoring ? 'Restoring...' : 'Restore Student'}</span>
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}

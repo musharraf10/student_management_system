@@ -250,7 +250,7 @@ const MobileStudentCard = memo(function MobileStudentCard({
 
   return (
     <>
-      <div className="relative overflow-hidden rounded-xl border border-slate-200 bg-slate-100 shadow-xs select-none transition-all duration-200 ease-out">
+      <div className="relative overflow-hidden rounded-xl border border-slate-200 bg-slate-100 shadow-xs select-none transition-all duration-250 ease-out animate-card-enter">
         {/* Background Swipe Cue: Green on Right Swipe (Present), Red on Left Swipe (Absent) */}
         <div className="absolute inset-0 flex items-center justify-between px-6 font-medium text-xs pointer-events-none">
           {/* Right Swipe Cue (Present) */}

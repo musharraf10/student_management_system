@@ -2,6 +2,7 @@ const ExcelJS = require('exceljs');
 const Student = require('../models/Student');
 const University = require('../models/University');
 const Section = require('../models/Section');
+const AuditLog = require('../models/AuditLog');
 const asyncHandler = require('../utils/asyncHandler');
 
 /**
@@ -46,8 +47,8 @@ const getStudents = asyncHandler(async (req, res) => {
     query.section = req.query.section;
   }
 
-  // Filter by status
-  if (req.query.status) {
+  // Filter by status (active, inactive, all)
+  if (req.query.status && req.query.status !== 'all') {
     query.status = req.query.status;
   }
 
@@ -123,6 +124,7 @@ const createStudent = asyncHandler(async (req, res) => {
     section,
     academicYear,
     status,
+    attendanceStartDate,
   } = req.body;
 
   if (
@@ -175,6 +177,10 @@ const createStudent = asyncHandler(async (req, res) => {
     throw new Error(`A student with NIAT ID '${niatId.toUpperCase().trim()}' already exists in this university`);
   }
 
+  const parsedStartDate = attendanceStartDate && !isNaN(Date.parse(attendanceStartDate))
+    ? new Date(attendanceStartDate)
+    : new Date();
+
   const student = await Student.create({
     rollNumber: rollNumber.trim(),
     niatId: niatId.toUpperCase().trim(),
@@ -186,6 +192,8 @@ const createStudent = asyncHandler(async (req, res) => {
     section,
     academicYear: academicYear.trim(),
     status: status || 'active',
+    isActive: status === 'inactive' ? false : true,
+    attendanceStartDate: parsedStartDate,
   });
 
   const populatedStudent = await Student.findById(student._id)
@@ -235,6 +243,7 @@ const updateStudent = asyncHandler(async (req, res) => {
     studentPhone,
     status,
     academicYear,
+    attendanceStartDate,
   } = req.body;
 
   // Check unique NIAT ID if modified
@@ -256,8 +265,14 @@ const updateStudent = asyncHandler(async (req, res) => {
   if (parentName) student.parentName = parentName.trim();
   if (parentPhone) student.parentPhone = parentPhone.trim();
   if (studentPhone !== undefined) studentPhone ? student.studentPhone = studentPhone.trim() : student.studentPhone = '';
-  if (status) student.status = status;
+  if (status) {
+    student.status = status;
+    student.isActive = status === 'active';
+  }
   if (academicYear) student.academicYear = academicYear.trim();
+  if (attendanceStartDate && !isNaN(Date.parse(attendanceStartDate))) {
+    student.attendanceStartDate = new Date(attendanceStartDate);
+  }
 
   await student.save();
 
@@ -377,6 +392,8 @@ const importStudentsExcel = asyncHandler(async (req, res) => {
     else if (val.includes('parentphone') || val.includes('parentmobile') || (val.includes('parent') && val.includes('phone'))) colIndexMap.parentPhone = colNumber;
     else if (val.includes('studentphone') || val.includes('studentmobile') || val.includes('phone') || val.includes('mobile')) {
       if (!colIndexMap.studentPhone) colIndexMap.studentPhone = colNumber;
+    } else if (val.includes('startdate') || val.includes('enrollment') || val.includes('joiningdate') || val.includes('attendance')) {
+      if (!colIndexMap.attendanceStartDate) colIndexMap.attendanceStartDate = colNumber;
     }
   });
 
@@ -441,6 +458,14 @@ const importStudentsExcel = asyncHandler(async (req, res) => {
     }
 
     seenNiatInSheet.add(niatId);
+
+    const startDateRaw = colIndexMap.attendanceStartDate ? getCellValue(colIndexMap.attendanceStartDate) : '';
+    const studentStartDate = startDateRaw && !isNaN(Date.parse(startDateRaw))
+      ? new Date(startDateRaw)
+      : (req.body.attendanceStartDate && !isNaN(Date.parse(req.body.attendanceStartDate))
+          ? new Date(req.body.attendanceStartDate)
+          : new Date());
+
     studentsToInsert.push({
       rollNumber,
       name,
@@ -452,6 +477,8 @@ const importStudentsExcel = asyncHandler(async (req, res) => {
       section,
       academicYear,
       status: 'active',
+      isActive: true,
+      attendanceStartDate: studentStartDate,
     });
   });
 
@@ -529,6 +556,8 @@ const previewStudentsExcel = asyncHandler(async (req, res) => {
     else if (val.includes('parentphone') || val.includes('parentmobile') || (val.includes('parent') && val.includes('phone'))) colIndexMap.parentPhone = colNumber;
     else if (val.includes('studentphone') || val.includes('studentmobile') || val.includes('phone') || val.includes('mobile')) {
       if (!colIndexMap.studentPhone) colIndexMap.studentPhone = colNumber;
+    } else if (val.includes('startdate') || val.includes('enrollment') || val.includes('joiningdate') || val.includes('attendance')) {
+      if (!colIndexMap.attendanceStartDate) colIndexMap.attendanceStartDate = colNumber;
     }
   });
 
@@ -712,12 +741,135 @@ const exportStudentsExcel = asyncHandler(async (req, res) => {
   res.end();
 });
 
+/**
+ * @desc    Deactivate (soft delete) student
+ * @route   PATCH /api/students/:id/deactivate
+ * @access  Private (Super Admin OR Coach with deleteStudents permission)
+ */
+const deactivateStudent = asyncHandler(async (req, res) => {
+  const student = await Student.findById(req.params.id);
+  if (!student) {
+    res.status(404);
+    throw new Error('Student not found');
+  }
+
+  // Authorization check for coach
+  if (req.user.role === 'coach') {
+    if (!req.user.permissions?.deleteStudents) {
+      res.status(403);
+      throw new Error('You do not have permission to delete or deactivate students');
+    }
+    const hasSection = (req.user.assignedSections || []).some(
+      (s) => s.toString() === student.section.toString()
+    );
+    const hasUni = (req.user.assignedUniversities || []).some(
+      (u) => u.toString() === student.university.toString()
+    );
+    if (!hasSection && !hasUni) {
+      res.status(403);
+      throw new Error('Access denied: You can only deactivate students in your assigned sections');
+    }
+  }
+
+  const prevStatus = student.status || 'active';
+  student.status = 'inactive';
+  student.isActive = false;
+  student.deletedAt = new Date();
+  student.deletedBy = req.user._id;
+
+  await student.save();
+
+  // Audit log entry
+  await AuditLog.create({
+    university: student.university,
+    section: student.section,
+    student: student._id,
+    actionType: 'student_deactivate',
+    previousStatus: prevStatus,
+    newStatus: 'inactive',
+    reason: req.body.reason || 'Student deactivated from active roster',
+    updatedBy: req.user._id,
+  });
+
+  const populated = await Student.findById(student._id)
+    .populate('university', 'name code')
+    .populate('section', 'name code semester');
+
+  res.status(200).json({
+    success: true,
+    message: 'Student deactivated successfully',
+    data: populated,
+  });
+});
+
+/**
+ * @desc    Restore deactivated student to active roster
+ * @route   PATCH /api/students/:id/restore
+ * @access  Private (Super Admin OR Coach with deleteStudents permission)
+ */
+const restoreStudent = asyncHandler(async (req, res) => {
+  const student = await Student.findById(req.params.id);
+  if (!student) {
+    res.status(404);
+    throw new Error('Student not found');
+  }
+
+  // Authorization check for coach
+  if (req.user.role === 'coach') {
+    if (!req.user.permissions?.deleteStudents) {
+      res.status(403);
+      throw new Error('You do not have permission to restore students');
+    }
+    const hasSection = (req.user.assignedSections || []).some(
+      (s) => s.toString() === student.section.toString()
+    );
+    const hasUni = (req.user.assignedUniversities || []).some(
+      (u) => u.toString() === student.university.toString()
+    );
+    if (!hasSection && !hasUni) {
+      res.status(403);
+      throw new Error('Access denied: You can only restore students in your assigned sections');
+    }
+  }
+
+  student.status = 'active';
+  student.isActive = true;
+  student.deletedAt = null;
+  student.deletedBy = null;
+
+  await student.save();
+
+  // Audit log entry
+  await AuditLog.create({
+    university: student.university,
+    section: student.section,
+    student: student._id,
+    actionType: 'student_restore',
+    previousStatus: 'inactive',
+    newStatus: 'active',
+    reason: req.body.reason || 'Student restored to active roster',
+    updatedBy: req.user._id,
+  });
+
+  const populated = await Student.findById(student._id)
+    .populate('university', 'name code')
+    .populate('section', 'name code semester');
+
+  res.status(200).json({
+    success: true,
+    message: 'Student restored to active roster successfully',
+    data: populated,
+  });
+});
+
 module.exports = {
   getStudents,
   getStudentById,
   createStudent,
   updateStudent,
   transferStudent,
+  deactivateStudent,
+  restoreStudent,
   importStudentsExcel,
   previewStudentsExcel,
   exportStudentsExcel,

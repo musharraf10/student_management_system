@@ -27,10 +27,11 @@ const attendanceService = {
       .populate('submittedBy', 'name email role')
       .populate('lastModifiedBy', 'name email role');
 
-    // Get active students enrolled in this section
+    // Get active students enrolled in this section (exclude soft-deleted/inactive)
     const students = await Student.find({
       section: sectionId,
       status: 'active',
+      isActive: { $ne: false },
     }).sort({ rollNumber: 1 });
 
     // Compute cumulative attendance percentage for each student in this section

@@ -75,6 +75,21 @@
   animation: fadeIn 0.18s ease-out forwards;
 }
 
+@keyframes cardEnter {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-card-enter {
+  animation: cardEnter 0.25s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
 html {
   font-family: var(--font-sans);
   font-synthesis: none;

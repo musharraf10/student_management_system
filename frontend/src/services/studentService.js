@@ -26,6 +26,16 @@ export const studentService = {
     return response.data;
   },
 
+  async deactivateStudent(id, reason = '') {
+    const response = await api.patch(`/students/${id}/deactivate`, { reason });
+    return response.data;
+  },
+
+  async restoreStudent(id) {
+    const response = await api.patch(`/students/${id}/restore`);
+    return response.data;
+  },
+
   async previewStudentsExcel(formData) {
     const response = await api.post('/students/preview-excel', formData, {
       headers: {

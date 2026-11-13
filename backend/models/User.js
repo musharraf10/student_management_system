@@ -61,6 +61,10 @@ const userSchema = new mongoose.Schema(
         type: Boolean,
         default: false,
       },
+      deleteStudents: {
+        type: Boolean,
+        default: false,
+      },
       editAttendance: {
         type: Boolean,
         default: false,

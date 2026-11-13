@@ -19,6 +19,7 @@ import {
   Filter,
   GraduationCap,
   Download,
+  CalendarCheck,
 } from 'lucide-react';
 
 export default function StudentAttendanceDetailPage() {
@@ -98,7 +99,8 @@ export default function StudentAttendanceDetailPage() {
     );
   }
 
-  const { student, summary, history = [] } = data || {};
+  const { student, summary, history = [], trackingStartDate } = data || {};
+  const effectiveStartDate = trackingStartDate || student?.attendanceStartDate;
 
   // Status badge styling helper
   const renderStatusBadge = (status, dayType) => {
@@ -255,7 +257,7 @@ export default function StudentAttendanceDetailPage() {
         </div>
 
         {/* Profile Details Grid */}
-        <div className="grid grid-cols-1 gap-4 p-4 sm:grid-cols-2 lg:grid-cols-4 text-xs">
+        <div className="grid grid-cols-1 gap-4 p-4 sm:grid-cols-2 lg:grid-cols-5 text-xs">
           <div className="flex items-start gap-2.5">
             <Building2 className="h-4 w-4 text-brand-400 shrink-0 mt-0.5" />
             <div>
@@ -275,6 +277,25 @@ export default function StudentAttendanceDetailPage() {
               </p>
               <p className="text-[11px] text-brand-400">
                 Sem {student?.section?.semester || '1'} • {student?.section?.academicYear || '2026-2027'}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-start gap-2.5">
+            <Calendar className="h-4 w-4 text-brand-400 shrink-0 mt-0.5" />
+            <div>
+              <p className="text-brand-400 font-medium">Tracking Start Date</p>
+              <p className="font-semibold text-brand-900 mt-0.5 font-mono">
+                {effectiveStartDate
+                  ? new Date(effectiveStartDate).toLocaleDateString('en-US', {
+                      month: 'short',
+                      day: 'numeric',
+                      year: 'numeric',
+                    })
+                  : 'From Inception'}
+              </p>
+              <p className="text-[11px] text-emerald-700 font-medium">
+                Active tracking baseline
               </p>
             </div>
           </div>
@@ -302,6 +323,23 @@ export default function StudentAttendanceDetailPage() {
             </div>
           </div>
         </div>
+      </div>
+
+      {/* Showing Attendance Tracked From Notice Banner */}
+      <div className="flex items-center gap-2.5 rounded-xl border border-brand-200 bg-brand-50/80 px-4 py-2.5 text-xs text-brand-800">
+        <CalendarCheck className="h-4 w-4 text-brand-700 shrink-0" />
+        <span>
+          Showing attendance tracked from{' '}
+          <strong>
+            {effectiveStartDate
+              ? new Date(effectiveStartDate).toLocaleDateString('en-US', {
+                  month: 'long',
+                  day: 'numeric',
+                  year: 'numeric',
+                })
+              : 'enrollment date'}
+          </strong>. Sundays, holidays, and non-working days prior to this tracking date are excluded from history and calculation metrics.
+        </span>
       </div>
 
       {/* ATTENDANCE SUMMARY STATS */}

@@ -19,11 +19,11 @@ const auditLogSchema = new mongoose.Schema(
     attendanceDay: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'AttendanceDay',
-      required: true,
+      required: false,
     },
     attendanceDate: {
       type: Date,
-      required: true,
+      required: false,
     },
     previousStatus: {
       type: String,
@@ -35,7 +35,7 @@ const auditLogSchema = new mongoose.Schema(
     },
     actionType: {
       type: String,
-      enum: ['create', 'update', 'status_change', 'bulk_mark'],
+      enum: ['create', 'update', 'status_change', 'bulk_mark', 'student_deactivate', 'student_restore'],
       default: 'status_change',
     },
     reason: {

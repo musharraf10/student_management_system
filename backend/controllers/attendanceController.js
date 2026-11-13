@@ -239,6 +239,11 @@ const getStudentAttendance = asyncHandler(async (req, res) => {
     }
   }
 
+  // Determine tracking start date for this student
+  let trackingStartDate = student.attendanceStartDate
+    ? normalizeDate(student.attendanceStartDate)
+    : normalizeDate(student.createdAt || new Date());
+
   // Query section attendance days
   let dayQuery = { section: student.section?._id };
 
@@ -260,20 +265,45 @@ const getStudentAttendance = asyncHandler(async (req, res) => {
     .populate('lastModifiedBy', 'name email role')
     .sort({ date: -1 });
 
-  const dayIds = attendanceDays.map((d) => d._id);
-
-  // Query individual student attendance records
-  const records = await AttendanceRecord.find({
-    student: student._id,
-    attendanceDay: { $in: dayIds },
-  });
+  // Query individual student attendance records (including transferred records)
+  let recordQuery = { student: student._id };
+  if (dayQuery.date) {
+    recordQuery.date = dayQuery.date;
+  }
+  const records = await AttendanceRecord.find(recordQuery).populate('attendanceDay');
 
   const recordMap = {};
+  let earliestRecordDate = null;
   records.forEach((r) => {
-    recordMap[r.attendanceDay.toString()] = r;
+    const rDate = normalizeDate(r.date);
+    if (!earliestRecordDate || rDate < earliestRecordDate) {
+      earliestRecordDate = rDate;
+    }
+    if (r.attendanceDay?._id) {
+      recordMap[r.attendanceDay._id.toString()] = r;
+    }
+    const dateKey = rDate.toISOString().split('T')[0];
+    recordMap[dateKey] = r;
   });
 
-  // Calculate day-by-day history & counters
+  // If student has explicit attendance records earlier than attendanceStartDate, include them
+  if (earliestRecordDate && earliestRecordDate < trackingStartDate) {
+    trackingStartDate = earliestRecordDate;
+  }
+
+  // Merge any transferred AttendanceDay docs from records that aren't in current section's attendanceDays
+  const existingDayIds = new Set(attendanceDays.map((d) => d._id.toString()));
+  records.forEach((r) => {
+    if (r.attendanceDay && !existingDayIds.has(r.attendanceDay._id.toString())) {
+      attendanceDays.push(r.attendanceDay);
+      existingDayIds.add(r.attendanceDay._id.toString());
+    }
+  });
+
+  // Sort merged days in reverse chronological order
+  attendanceDays.sort((a, b) => new Date(b.date) - new Date(a.date));
+
+  // Calculate day-by-day history & counters, filtering out pre-enrollment days
   let workingDays = 0;
   let presentDays = 0;
   let absentDays = 0;
@@ -285,11 +315,21 @@ const getStudentAttendance = asyncHandler(async (req, res) => {
 
   const dayOfWeekNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
-  const history = attendanceDays.map((day) => {
-    const d = new Date(day.date);
-    const dayOfWeek = dayOfWeekNames[d.getUTCDay()];
-    const rec = recordMap[day._id.toString()];
+  const history = [];
 
+  attendanceDays.forEach((day) => {
+    const d = new Date(day.date);
+    const dayDate = normalizeDate(d);
+    const dateKey = dayDate.toISOString().split('T')[0];
+    const rec = recordMap[day._id.toString()] || recordMap[dateKey];
+
+    // ROOT CAUSE FIX: Exclude historical calendar days (Sundays, holidays, unmarked working days)
+    // prior to student's tracking start date unless an explicit AttendanceRecord exists
+    if (dayDate < trackingStartDate && !rec) {
+      return;
+    }
+
+    const dayOfWeek = dayOfWeekNames[d.getUTCDay()];
     let status = 'not_recorded';
     if (day.dayType === 'sunday') {
       status = 'sunday';
@@ -313,7 +353,7 @@ const getStudentAttendance = asyncHandler(async (req, res) => {
       }
     }
 
-    return {
+    history.push({
       _id: day._id,
       date: day.date,
       dayOfWeek,
@@ -324,7 +364,7 @@ const getStudentAttendance = asyncHandler(async (req, res) => {
       recordId: rec?._id || null,
       updatedBy: day.lastModifiedBy || day.submittedBy || null,
       updatedAt: rec?.updatedAt || day.updatedAt,
-    };
+    });
   });
 
   // Centralized stats calculation
@@ -343,9 +383,10 @@ const getStudentAttendance = asyncHandler(async (req, res) => {
     success: true,
     data: {
       student,
+      trackingStartDate,
       summary: {
         ...summary,
-        totalDays: attendanceDays.length,
+        totalDays: history.length,
       },
       history,
     },

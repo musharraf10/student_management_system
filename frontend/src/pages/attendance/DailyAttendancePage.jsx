@@ -115,7 +115,7 @@ const DesktopAttendanceRow = memo(function DesktopAttendanceRow({
   const attendancePct = student.attendancePercentage;
 
   return (
-    <tr className="hover:bg-slate-50/70 transition-colors">
+    <tr className="hover:bg-slate-50/70 transition-all duration-200 animate-card-enter">
       {/* Roll Number & NIAT ID */}
       <td className="py-3 px-4">
         <div className="font-mono text-xs font-semibold text-slate-900">
@@ -507,13 +507,14 @@ export default function DailyAttendancePage() {
         setDayType(data.attendanceDay.dayType);
         setHolidayReason(data.attendanceDay.holidayReason || '');
 
-        (data.records || []).forEach((r) => {
+        (data.records || []).forEach((r, idx) => {
           if (r.student) {
             newMap[r.student._id || r.student] = {
               status: r.status,
               remarks: r.remarks || '',
               recordId: r._id,
               student: r.student,
+              markedAt: idx + 1,
             };
           }
         });
@@ -531,6 +532,7 @@ export default function DailyAttendancePage() {
             remarks: '',
             recordId: null,
             student: s,
+            markedAt: null,
           };
         });
       }
@@ -662,14 +664,19 @@ export default function DailyAttendancePage() {
 
   // 4. Update individual status in local map & IndexedDB (immediate offline persistence)
   const handleStatusChange = async (studentId, status) => {
-    // 1. Immediate UI update for counters, badges, and list filtering
-    setRecordsMap((prev) => ({
-      ...prev,
-      [studentId]: {
-        ...prev[studentId],
-        status,
-      },
-    }));
+    const now = Date.now();
+    // 1. Immediate UI update for counters, badges, and smooth list transition
+    setRecordsMap((prev) => {
+      const existing = prev[studentId] || {};
+      return {
+        ...prev,
+        [studentId]: {
+          ...existing,
+          status,
+          markedAt: status === 'pending' ? null : now,
+        },
+      };
+    });
 
     // 2. Immediate IndexedDB persistence
     if (user?._id) {
@@ -751,9 +758,15 @@ export default function DailyAttendancePage() {
   const pendingStudents = filteredStudents.filter(
     (s) => (recordsMap[s._id]?.status || 'pending') === 'pending'
   );
-  const completedStudents = filteredStudents.filter(
-    (s) => recordsMap[s._id]?.status && recordsMap[s._id].status !== 'pending'
-  );
+  // Order completed students chronologically by markedAt ascending so newly marked students
+  // appear at the BOTTOM of the completed attendance list
+  const completedStudents = filteredStudents
+    .filter((s) => recordsMap[s._id]?.status && recordsMap[s._id].status !== 'pending')
+    .sort((a, b) => {
+      const timeA = recordsMap[a._id]?.markedAt || 0;
+      const timeB = recordsMap[b._id]?.markedAt || 0;
+      return timeA - timeB;
+    });
 
   // 7. Submit attendance (with offline-first guarantee and local cleanup on sync)
   const handleSubmitAttendance = async (e) => {
@@ -1658,80 +1671,227 @@ export default function DailyAttendancePage() {
                 )}
               </div>
 
-              {/* Desktop Student Attendance Sheet Table (hidden md:block) */}
-              <div className="hidden md:block overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xs min-h-[300px]">
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left text-xs">
-                    <thead className="border-b border-slate-200 bg-slate-50 text-slate-700 font-semibold">
-                      <tr>
-                        <th className="py-3 px-4">Roll / NIAT ID</th>
-                        <th className="py-3 px-4">Student & Contact</th>
-                        <th className="py-3 px-4">Att. Rate</th>
-                        <th className="py-3 px-4 text-center">Status</th>
-                        <th className="py-3 px-4 text-center">Attendance Marking</th>
-                        <th className="py-3 px-4">Remarks</th>
-                        {existingAttendanceDay && canEdit && (
-                          <th className="py-3 px-4 text-right">Correction</th>
+              {/* Desktop Student Attendance Sheet (hidden md:block) */}
+              <div className="hidden md:block space-y-6">
+                {loading ? (
+                  <div className="rounded-2xl border border-slate-200 bg-white p-8 text-center text-slate-500">
+                    <Loader2 className="mx-auto h-6 w-6 animate-spin text-brand-700" />
+                    <span className="mt-2 block text-xs">Loading sheet...</span>
+                  </div>
+                ) : students.length === 0 ? (
+                  <div className="rounded-2xl border border-slate-200 bg-white p-8 text-center text-slate-500">
+                    <CalendarCheck className="mx-auto h-8 w-8 text-slate-300" />
+                    <span className="mt-2 block text-xs">
+                      No active students found in this section
+                    </span>
+                  </div>
+                ) : filteredStudents.length === 0 ? (
+                  <div className="rounded-2xl border border-slate-200 bg-white p-8 text-center text-slate-500">
+                    <Search className="mx-auto h-6 w-6 text-slate-300 mb-1" />
+                    <span className="block text-xs font-medium text-slate-700">
+                      No students match the current filters
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setStudentSearch('');
+                        setStatusFilter('all');
+                      }}
+                      className="mt-2 text-xs text-brand-700 hover:text-brand-900 underline cursor-pointer"
+                    >
+                      Reset search and filters
+                    </button>
+                  </div>
+                ) : statusFilter === 'all' ? (
+                  <div className="space-y-6">
+                    {/* SECTION 1: Pending Students Table */}
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between px-1">
+                        <div className="flex items-center gap-2">
+                          <span className="h-2.5 w-2.5 rounded-full bg-slate-400"></span>
+                          <h3 className="text-sm font-bold uppercase tracking-wider text-slate-700">
+                            Pending Attendance
+                          </h3>
+                          <span className="rounded-full bg-slate-200 px-2 py-0.5 text-xs font-bold text-slate-700">
+                            {pendingStudents.length}
+                          </span>
+                        </div>
+                        {pendingStudents.length > 0 && (!existingAttendanceDay || canEdit) && (
+                          <span className="text-xs text-brand-700 font-medium">
+                            Click Present or Absent to mark
+                          </span>
                         )}
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100 text-slate-800">
-                      {loading ? (
-                        <tr>
-                          <td colSpan={7} className="py-8 text-center text-slate-500">
-                            <Loader2 className="mx-auto h-6 w-6 animate-spin text-brand-700" />
-                            <span className="mt-2 block text-xs">Loading sheet...</span>
-                          </td>
-                        </tr>
-                      ) : students.length === 0 ? (
-                        <tr>
-                          <td colSpan={7} className="py-8 text-center text-slate-500">
-                            <CalendarCheck className="mx-auto h-8 w-8 text-slate-300" />
-                            <span className="mt-2 block text-xs">
-                              No active students found in this section
-                            </span>
-                          </td>
-                        </tr>
-                      ) : filteredStudents.length === 0 ? (
-                        <tr>
-                          <td colSpan={7} className="py-8 text-center text-slate-500">
-                            <Search className="mx-auto h-6 w-6 text-slate-300 mb-1" />
-                            <span className="block text-xs font-medium text-slate-700">
-                              No students match the current filters
-                            </span>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setStudentSearch('');
-                                setStatusFilter('all');
-                              }}
-                              className="mt-2 text-xs text-brand-700 hover:text-brand-900 underline cursor-pointer"
-                            >
-                              Reset search and filters
-                            </button>
-                          </td>
-                        </tr>
+                      </div>
+
+                      {pendingStudents.length === 0 ? (
+                        <div className="rounded-2xl border border-emerald-200 bg-emerald-50/70 p-4 text-center">
+                          <p className="text-xs font-semibold text-emerald-800 flex items-center justify-center gap-1.5">
+                            <Check className="h-4 w-4 text-emerald-600 stroke-[2.5]" />
+                            All students marked! Ready to review and submit.
+                          </p>
+                        </div>
                       ) : (
-                        filteredStudents.map((student) => {
-                          const currentItem = recordsMap[student._id] || { status: 'pending', remarks: '' };
-                          return (
-                            <DesktopAttendanceRow
-                              key={student._id}
-                              student={student}
-                              status={currentItem.status}
-                              remarks={currentItem.remarks}
-                              canEdit={!existingAttendanceDay || canEdit}
-                              isSubmitted={Boolean(existingAttendanceDay)}
-                              onStatusChange={handleStatusChange}
-                              onRemarksChange={handleRemarksChange}
-                              onOpenCorrection={openCorrection}
-                            />
-                          );
-                        })
+                        <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xs">
+                          <div className="overflow-x-auto">
+                            <table className="w-full text-left text-xs">
+                              <thead className="border-b border-slate-200 bg-slate-50 text-slate-700 font-semibold">
+                                <tr>
+                                  <th className="py-3 px-4">Roll / NIAT ID</th>
+                                  <th className="py-3 px-4">Student & Contact</th>
+                                  <th className="py-3 px-4">Att. Rate</th>
+                                  <th className="py-3 px-4 text-center">Status</th>
+                                  <th className="py-3 px-4 text-center">Attendance Marking</th>
+                                  <th className="py-3 px-4">Remarks</th>
+                                  {existingAttendanceDay && canEdit && (
+                                    <th className="py-3 px-4 text-right">Correction</th>
+                                  )}
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-slate-100 text-slate-800">
+                                {pendingStudents.map((student) => {
+                                  const currentItem = recordsMap[student._id] || { status: 'pending', remarks: '' };
+                                  return (
+                                    <DesktopAttendanceRow
+                                      key={student._id}
+                                      student={student}
+                                      status={currentItem.status}
+                                      remarks={currentItem.remarks}
+                                      canEdit={!existingAttendanceDay || canEdit}
+                                      isSubmitted={Boolean(existingAttendanceDay)}
+                                      onStatusChange={handleStatusChange}
+                                      onRemarksChange={handleRemarksChange}
+                                      onOpenCorrection={openCorrection}
+                                    />
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
                       )}
-                    </tbody>
-                  </table>
-                </div>
+                    </div>
+
+                    {/* SECTION 2: Completed Attendance Table (Chronologically ordered: newest at bottom) */}
+                    {completedStudents.length > 0 && (
+                      <div className="space-y-3 pt-4 border-t border-slate-200">
+                        <div className="flex items-center justify-between px-1">
+                          <div className="flex items-center gap-2">
+                            <span className="h-2.5 w-2.5 rounded-full bg-emerald-500"></span>
+                            <h3 className="text-sm font-bold uppercase tracking-wider text-slate-800">
+                              Completed Attendance
+                            </h3>
+                            <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-bold text-emerald-800">
+                              {completedStudents.length}
+                            </span>
+                          </div>
+                          <span className="text-xs text-slate-500 font-normal">
+                            Recently marked students appear at the bottom
+                          </span>
+                        </div>
+
+                        <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xs">
+                          <div className="overflow-x-auto">
+                            <table className="w-full text-left text-xs">
+                              <thead className="border-b border-slate-200 bg-slate-50 text-slate-700 font-semibold">
+                                <tr>
+                                  <th className="py-3 px-4">Roll / NIAT ID</th>
+                                  <th className="py-3 px-4">Student & Contact</th>
+                                  <th className="py-3 px-4">Att. Rate</th>
+                                  <th className="py-3 px-4 text-center">Status</th>
+                                  <th className="py-3 px-4 text-center">Attendance Marking</th>
+                                  <th className="py-3 px-4">Remarks</th>
+                                  {existingAttendanceDay && canEdit && (
+                                    <th className="py-3 px-4 text-right">Correction</th>
+                                  )}
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-slate-100 text-slate-800">
+                                {completedStudents.map((student) => {
+                                  const currentItem = recordsMap[student._id] || { status: 'present', remarks: '' };
+                                  return (
+                                    <DesktopAttendanceRow
+                                      key={student._id}
+                                      student={student}
+                                      status={currentItem.status}
+                                      remarks={currentItem.remarks}
+                                      canEdit={!existingAttendanceDay || canEdit}
+                                      isSubmitted={Boolean(existingAttendanceDay)}
+                                      onStatusChange={handleStatusChange}
+                                      onRemarksChange={handleRemarksChange}
+                                      onOpenCorrection={openCorrection}
+                                    />
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  /* Specific Status Filter is Active on Desktop */
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between px-1">
+                      <div className="flex items-center gap-2">
+                        <span className="h-2.5 w-2.5 rounded-full bg-brand-700"></span>
+                        <h3 className="text-sm font-bold uppercase tracking-wider text-slate-800">
+                          {statusFilter === 'pending'
+                            ? 'Pending Students'
+                            : `${statusFilter.replace('_', ' ')} Students`}
+                        </h3>
+                        <span className="rounded-full bg-slate-200 px-2 py-0.5 text-xs font-bold text-slate-800">
+                          {filteredStudents.length}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setStatusFilter('all')}
+                        className="text-xs text-brand-700 font-medium hover:underline cursor-pointer"
+                      >
+                        View All
+                      </button>
+                    </div>
+
+                    <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xs">
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-left text-xs">
+                          <thead className="border-b border-slate-200 bg-slate-50 text-slate-700 font-semibold">
+                            <tr>
+                              <th className="py-3 px-4">Roll / NIAT ID</th>
+                              <th className="py-3 px-4">Student & Contact</th>
+                              <th className="py-3 px-4">Att. Rate</th>
+                              <th className="py-3 px-4 text-center">Status</th>
+                              <th className="py-3 px-4 text-center">Attendance Marking</th>
+                              <th className="py-3 px-4">Remarks</th>
+                              {existingAttendanceDay && canEdit && (
+                                <th className="py-3 px-4 text-right">Correction</th>
+                              )}
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100 text-slate-800">
+                            {filteredStudents.map((student) => {
+                              const currentItem = recordsMap[student._id] || { status: 'pending', remarks: '' };
+                              return (
+                                <DesktopAttendanceRow
+                                  key={student._id}
+                                  student={student}
+                                  status={currentItem.status}
+                                  remarks={currentItem.remarks}
+                                  canEdit={!existingAttendanceDay || canEdit}
+                                  isSubmitted={Boolean(existingAttendanceDay)}
+                                  onStatusChange={handleStatusChange}
+                                  onRemarksChange={handleRemarksChange}
+                                  onOpenCorrection={openCorrection}
+                                />
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* F. SUBMISSION SECTION */}
