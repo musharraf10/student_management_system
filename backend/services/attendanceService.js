@@ -521,6 +521,233 @@ const attendanceService = {
       skippedCount,
     };
   },
+
+  /**
+   * Batch synchronize offline attendance records with MongoDB.
+   * Fully idempotent, supports partial success, and returns per-record acknowledgements.
+   */
+  async syncAttendanceBatch({ userId, userRole, assignedSections = [], records = [] }) {
+    if (!Array.isArray(records) || records.length === 0) {
+      return {
+        totalProcessed: 0,
+        acknowledgedCount: 0,
+        failedCount: 0,
+        acknowledgedOpIds: [],
+        failedRecords: [],
+      };
+    }
+
+    const VALID_STATUSES = new Set(['present', 'absent', 'late', 'leave', 'on_duty']);
+    const VALID_DAY_TYPES = new Set(['working_day', 'online_class', 'sunday', 'holiday']);
+
+    const acknowledgedOpIds = [];
+    const failedRecords = [];
+    const validRecords = [];
+
+    // 1. Validate each record individually
+    for (const r of records) {
+      const opId = r.opId || `op_${r.studentId}_${Date.now()}`;
+
+      if (!r.sectionId || !r.studentId || !r.date || !r.status) {
+        failedRecords.push({
+          opId,
+          studentId: r.studentId,
+          reason: 'Missing mandatory fields (sectionId, studentId, date, status)',
+        });
+        continue;
+      }
+
+      if (!VALID_STATUSES.has(r.status)) {
+        failedRecords.push({
+          opId,
+          studentId: r.studentId,
+          reason: `Invalid status '${r.status}'`,
+        });
+        continue;
+      }
+
+      if (r.dayType && !VALID_DAY_TYPES.has(r.dayType)) {
+        failedRecords.push({
+          opId,
+          studentId: r.studentId,
+          reason: `Invalid dayType '${r.dayType}'`,
+        });
+        continue;
+      }
+
+      // Check Coach Section Assignment
+      if (userRole === 'coach') {
+        const isAssigned = assignedSections.some(
+          (s) => s.toString() === r.sectionId.toString()
+        );
+        if (!isAssigned) {
+          failedRecords.push({
+            opId,
+            studentId: r.studentId,
+            reason: 'Access denied: Coach is not assigned to this section',
+          });
+          continue;
+        }
+      }
+
+      let normalizedDate;
+      try {
+        normalizedDate = normalizeDate(r.date);
+      } catch (dateErr) {
+        failedRecords.push({
+          opId,
+          studentId: r.studentId,
+          reason: 'Invalid attendance date format',
+        });
+        continue;
+      }
+
+      validRecords.push({
+        ...r,
+        opId,
+        normalizedDate,
+        dayType: r.dayType || 'working_day',
+      });
+    }
+
+    // 2. Group valid records by section and normalized date
+    const groups = {}; // key: `${sectionId}_${dateKey}`
+    validRecords.forEach((r) => {
+      const dateKey = r.normalizedDate.toISOString().split('T')[0];
+      const groupKey = `${r.sectionId}_${dateKey}`;
+      if (!groups[groupKey]) {
+        groups[groupKey] = {
+          sectionId: r.sectionId,
+          normalizedDate: r.normalizedDate,
+          dayType: r.dayType,
+          holidayReason: r.holidayReason || '',
+          records: [],
+        };
+      }
+      groups[groupKey].records.push(r);
+    });
+
+    // 3. Process each group atomically
+    for (const groupKey of Object.keys(groups)) {
+      const group = groups[groupKey];
+      try {
+        const section = await Section.findById(group.sectionId);
+        if (!section) {
+          group.records.forEach((r) => {
+            failedRecords.push({ opId: r.opId, reason: 'Target section not found' });
+          });
+          continue;
+        }
+
+        // Find or create AttendanceDay
+        let attendanceDay = await AttendanceDay.findOne({
+          section: group.sectionId,
+          date: group.normalizedDate,
+        });
+
+        if (!attendanceDay) {
+          attendanceDay = await AttendanceDay.create({
+            university: section.university,
+            section: group.sectionId,
+            date: group.normalizedDate,
+            dayType: group.dayType,
+            holidayReason: group.holidayReason,
+            totalStudents: 0,
+            presentCount: 0,
+            absentCount: 0,
+            lateCount: 0,
+            leaveCount: 0,
+            onDutyCount: 0,
+            submittedBy: userId,
+            status: 'submitted',
+          });
+        } else {
+          attendanceDay.lastModifiedBy = userId;
+        }
+
+        // Prepare bulk operations for individual student records
+        const bulkOps = group.records.map((r) => ({
+          updateOne: {
+            filter: {
+              section: group.sectionId,
+              date: group.normalizedDate,
+              student: r.studentId,
+            },
+            update: {
+              $set: {
+                attendanceDay: attendanceDay._id,
+                university: section.university,
+                section: group.sectionId,
+                student: r.studentId,
+                date: group.normalizedDate,
+                status: r.status,
+                remarks: r.remarks ? r.remarks.trim() : '',
+              },
+            },
+            upsert: true,
+          },
+        }));
+
+        if (bulkOps.length > 0) {
+          await AttendanceRecord.bulkWrite(bulkOps, { ordered: false });
+        }
+
+        // Recalculate aggregate metrics for the day
+        const allDayRecords = await AttendanceRecord.find({
+          attendanceDay: attendanceDay._id,
+        });
+
+        let p = 0, a = 0, lt = 0, l = 0, od = 0;
+        allDayRecords.forEach((rec) => {
+          if (rec.status === 'present') p++;
+          else if (rec.status === 'absent') a++;
+          else if (rec.status === 'late') lt++;
+          else if (rec.status === 'leave') l++;
+          else if (rec.status === 'on_duty') od++;
+        });
+
+        attendanceDay.presentCount = p;
+        attendanceDay.absentCount = a;
+        attendanceDay.lateCount = lt;
+        attendanceDay.leaveCount = l;
+        attendanceDay.onDutyCount = od;
+        attendanceDay.totalStudents = allDayRecords.length;
+        await attendanceDay.save();
+
+        // Audit log for synchronized batch
+        await AuditLog.create({
+          university: section.university,
+          section: group.sectionId,
+          attendanceDay: attendanceDay._id,
+          attendanceDate: group.normalizedDate,
+          previousStatus: 'offline_cache',
+          newStatus: `${group.records.length} records synced`,
+          actionType: 'bulk_mark',
+          reason: `Synchronized ${group.records.length} attendance records from offline cache`,
+          updatedBy: userId,
+        });
+
+        // Acknowledge all records in this successfully committed group
+        group.records.forEach((r) => acknowledgedOpIds.push(r.opId));
+      } catch (groupErr) {
+        console.error(`Error processing attendance sync group ${groupKey}:`, groupErr);
+        group.records.forEach((r) => {
+          failedRecords.push({
+            opId: r.opId,
+            reason: groupErr.message || 'Database write error during synchronization',
+          });
+        });
+      }
+    }
+
+    return {
+      totalProcessed: records.length,
+      acknowledgedCount: acknowledgedOpIds.length,
+      failedCount: failedRecords.length,
+      acknowledgedOpIds,
+      failedRecords,
+    };
+  },
 };
 
 module.exports = attendanceService;

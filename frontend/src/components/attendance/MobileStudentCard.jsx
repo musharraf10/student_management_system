@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, memo } from 'react';
 import { createPortal } from 'react-dom';
 import { Link, useNavigate } from 'react-router-dom';
 import {
@@ -35,7 +35,7 @@ import {
  * - Three-dot menu with portal dropdown on desktop & bottom sheet on mobile
  *   (supports Late, Leave, On Duty, View Attendance, Reset to Pending, Audit Correction)
  */
-export default function MobileStudentCard({
+const MobileStudentCard = memo(function MobileStudentCard({
   student,
   status = 'pending',
   remarks = '',
@@ -814,4 +814,6 @@ export default function MobileStudentCard({
         )}
     </>
   );
-}
+});
+
+export default MobileStudentCard;

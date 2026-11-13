@@ -1,7 +1,9 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, memo, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import attendanceService from '../../services/attendanceService';
 import sectionService from '../../services/sectionService';
+import attendanceDB from '../../services/attendanceDB';
+import attendanceSyncService from '../../services/attendanceSyncService';
 import { useAuth } from '../../context/AuthContext';
 import { Link, useNavigate } from 'react-router-dom';
 import MobileStudentCard from '../../components/attendance/MobileStudentCard';
@@ -28,12 +30,15 @@ import {
   Phone,
   Filter,
   HelpCircle,
+  Wifi,
+  WifiOff,
+  RefreshCw,
 } from 'lucide-react';
 
 /**
  * Desktop table row for a student with simplified Present / Absent buttons + Three-Dot Menu
  */
-function DesktopAttendanceRow({
+const DesktopAttendanceRow = memo(function DesktopAttendanceRow({
   student,
   status,
   remarks,
@@ -370,7 +375,7 @@ function DesktopAttendanceRow({
       )}
     </tr>
   );
-}
+});
 
 export default function DailyAttendancePage() {
   const { user, isSuperAdmin, hasPermission } = useAuth();
@@ -395,6 +400,26 @@ export default function DailyAttendancePage() {
   const [existingAttendanceDay, setExistingAttendanceDay] = useState(null);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+
+  // Offline & Background Synchronization State
+  const [syncInfo, setSyncInfo] = useState({
+    isOnline: typeof navigator !== 'undefined' ? navigator.onLine : true,
+    isSyncing: false,
+    pendingCount: 0,
+    lastSyncedAt: null,
+    syncError: null,
+  });
+
+  // Subscribe to background sync coordinator
+  useEffect(() => {
+    if (user?._id) {
+      attendanceSyncService.setCurrentUser(user._id);
+      const unsubscribe = attendanceSyncService.subscribe((state) => {
+        setSyncInfo(state);
+      });
+      return () => unsubscribe();
+    }
+  }, [user?._id]);
 
   // Gesture tip state (dismissed once swiped or closed, persisted in localStorage)
   const [showSwipeTip, setShowSwipeTip] = useState(() => {
@@ -431,24 +456,40 @@ export default function DailyAttendancePage() {
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
 
-  // 1. Fetch available sections
+  // 1. Fetch available sections (with offline cache fallback)
   useEffect(() => {
     const loadSections = async () => {
       try {
         const res = await sectionService.getSections({ status: 'active' });
         const list = res.data || [];
         setSections(list);
+
+        if (user?._id && list.length > 0) {
+          attendanceDB.cacheSections(user._id, list).catch(() => {});
+        }
+
         if (list.length > 0 && !selectedSectionId) {
           setSelectedSectionId(list[0]._id);
         }
       } catch (err) {
+        // Fallback to offline cached sections
+        if (user?._id) {
+          try {
+            const cached = await attendanceDB.getCachedSections(user._id);
+            if (cached && cached.length > 0) {
+              setSections(cached);
+              if (!selectedSectionId) setSelectedSectionId(cached[0]._id);
+              return;
+            }
+          } catch {}
+        }
         setError(err.response?.data?.message || 'Failed to load sections');
       }
     };
     loadSections();
-  }, []);
+  }, [user?._id]);
 
-  // 2. Fetch daily sheet when section or date changes
+  // 2. Fetch daily sheet when section or date changes (with offline recovery)
   const fetchDailySheet = async () => {
     if (!selectedSectionId || !selectedDate) return;
 
@@ -458,13 +499,14 @@ export default function DailyAttendancePage() {
       const res = await attendanceService.getDailySheet(selectedSectionId, selectedDate);
       const data = res.data;
 
+      let studentList = [];
+      const newMap = {};
+
       if (data.isSubmitted && data.attendanceDay) {
         setExistingAttendanceDay(data.attendanceDay);
         setDayType(data.attendanceDay.dayType);
         setHolidayReason(data.attendanceDay.holidayReason || '');
 
-        // Map existing student records
-        const newMap = {};
         (data.records || []).forEach((r) => {
           if (r.student) {
             newMap[r.student._id || r.student] = {
@@ -475,31 +517,96 @@ export default function DailyAttendancePage() {
             };
           }
         });
-        setRecordsMap(newMap);
-        setStudents((data.records || []).map((r) => r.student));
+        studentList = (data.records || []).map((r) => r.student);
       } else {
         // Not submitted yet
         setExistingAttendanceDay(null);
         setDayType('working_day');
         setHolidayReason('');
 
-        const studentList = data.students || [];
-        setStudents(studentList);
-
-        // Initialize students as 'pending' so unrecorded students are clearly distinguishable
-        const initialMap = {};
+        studentList = data.students || [];
         studentList.forEach((s) => {
-          initialMap[s._id] = {
+          newMap[s._id] = {
             status: 'pending',
             remarks: '',
             recordId: null,
             student: s,
           };
         });
-        setRecordsMap(initialMap);
       }
+
+      // Cache student roster locally for offline resilience
+      if (user?._id && studentList.length > 0) {
+        attendanceDB
+          .cacheRoster(user._id, selectedSectionId, data.section, studentList)
+          .catch(() => {});
+      }
+
+      // Inspect IndexedDB for any local offline changes for this section & date and overlay them
+      if (user?._id) {
+        try {
+          const localMarks = await attendanceDB.getLocalRecordsForDay(
+            user._id,
+            selectedSectionId,
+            selectedDate
+          );
+          localMarks.forEach((loc) => {
+            if (newMap[loc.studentId]) {
+              newMap[loc.studentId].status = loc.status;
+              if (loc.remarks) newMap[loc.studentId].remarks = loc.remarks;
+            }
+          });
+        } catch (dbErr) {
+          console.warn('Failed to load local offline records:', dbErr);
+        }
+      }
+
+      setStudents(studentList);
+      setRecordsMap(newMap);
     } catch (err) {
-      setError(err.response?.data?.message || 'Failed to fetch attendance sheet');
+      console.warn('Network fetch daily sheet failed, attempting offline recovery:', err);
+      // OFFLINE RECOVERY FALLBACK
+      if (user?._id) {
+        try {
+          const cachedRoster = await attendanceDB.getCachedRoster(
+            user._id,
+            selectedSectionId
+          );
+          if (cachedRoster && cachedRoster.students?.length > 0) {
+            const studentList = cachedRoster.students;
+            const localMarks = await attendanceDB.getLocalRecordsForDay(
+              user._id,
+              selectedSectionId,
+              selectedDate
+            );
+            const localMarkMap = {};
+            localMarks.forEach((m) => {
+              localMarkMap[m.studentId] = m;
+            });
+
+            const offlineMap = {};
+            studentList.forEach((s) => {
+              const mark = localMarkMap[s._id];
+              offlineMap[s._id] = {
+                status: mark?.status || 'pending',
+                remarks: mark?.remarks || '',
+                recordId: null,
+                student: s,
+              };
+            });
+
+            setExistingAttendanceDay(null);
+            setDayType('working_day');
+            setHolidayReason('');
+            setStudents(studentList);
+            setRecordsMap(offlineMap);
+            return;
+          }
+        } catch (recoverErr) {
+          console.error('Offline recovery error:', recoverErr);
+        }
+      }
+      setError('Unable to reach server and no offline cache available for this section.');
     } finally {
       setLoading(false);
     }
@@ -511,18 +618,51 @@ export default function DailyAttendancePage() {
     }
   }, [selectedSectionId, selectedDate]);
 
-  // 3. Mark All with specific status
-  const handleMarkAll = (status) => {
+  // 3. Mark All with specific status (persists to IndexedDB & triggers sync)
+  const handleMarkAll = async (status) => {
     const updated = { ...recordsMap };
+    const bulkList = [];
+    const targetSec = sections.find((s) => s._id === selectedSectionId);
+    const uniId = targetSec?.university?._id || targetSec?.university || '';
+
     Object.keys(updated).forEach((sId) => {
       updated[sId] = { ...updated[sId], status };
+      const studentObj = updated[sId].student || students.find((s) => s._id === sId);
+      bulkList.push({
+        userId: user?._id,
+        universityId: uniId,
+        sectionId: selectedSectionId,
+        date: selectedDate,
+        dayType,
+        holidayReason,
+        studentId: sId,
+        studentName: studentObj?.name || '',
+        rollNumber: studentObj?.rollNumber || '',
+        status,
+        remarks: updated[sId]?.remarks || '',
+      });
     });
+
     setRecordsMap(updated);
+
+    // Durable IndexedDB Bulk Persistence
+    if (user?._id && bulkList.length > 0) {
+      try {
+        await attendanceDB.saveLocalRecordsBulk(bulkList);
+        attendanceSyncService.refreshPendingCount(user._id);
+
+        if (syncInfo.isOnline) {
+          attendanceSyncService.syncPending(user._id);
+        }
+      } catch (err) {
+        console.error('Failed to save bulk records to IndexedDB:', err);
+      }
+    }
   };
 
-  // 4. Update individual status in local map & persist if already submitted
+  // 4. Update individual status in local map & IndexedDB (immediate offline persistence)
   const handleStatusChange = async (studentId, status) => {
-    // Immediate UI update so lists, live counts, and badges update instantly
+    // 1. Immediate UI update for counters, badges, and list filtering
     setRecordsMap((prev) => ({
       ...prev,
       [studentId]: {
@@ -531,17 +671,35 @@ export default function DailyAttendancePage() {
       },
     }));
 
-    // If this sheet was already submitted and has an existing recordId, persist immediately with audit tracking
-    const currentItem = recordsMap[studentId];
-    if (existingAttendanceDay && currentItem?.recordId && canEdit) {
+    // 2. Immediate IndexedDB persistence
+    if (user?._id) {
+      const studentObj = students.find((s) => s._id === studentId);
+      const targetSec = sections.find((s) => s._id === selectedSectionId);
+      const uniId = targetSec?.university?._id || targetSec?.university || '';
+
       try {
-        await attendanceService.updateStudentRecord(currentItem.recordId, {
-          newStatus: status,
-          reason: `Status updated to ${status.replace('_', ' ')} via attendance options menu`,
+        await attendanceDB.saveLocalRecord({
+          userId: user._id,
+          universityId: uniId,
+          sectionId: selectedSectionId,
+          date: selectedDate,
+          dayType,
+          holidayReason,
+          studentId,
+          studentName: studentObj?.name || '',
+          rollNumber: studentObj?.rollNumber || '',
+          status,
+          remarks: recordsMap[studentId]?.remarks || '',
         });
+
+        attendanceSyncService.refreshPendingCount(user._id);
+
+        // 3. Trigger synchronization if online
+        if (syncInfo.isOnline) {
+          attendanceSyncService.syncPending(user._id);
+        }
       } catch (err) {
-        console.error('Failed to update student attendance record:', err);
-        setError(err.response?.data?.message || 'Failed to update student attendance record');
+        console.error('Failed to persist record to IndexedDB:', err);
       }
     }
   };
@@ -597,7 +755,7 @@ export default function DailyAttendancePage() {
     (s) => recordsMap[s._id]?.status && recordsMap[s._id].status !== 'pending'
   );
 
-  // 7. Submit attendance
+  // 7. Submit attendance (with offline-first guarantee and local cleanup on sync)
   const handleSubmitAttendance = async (e) => {
     e.preventDefault();
     setSaving(true);
@@ -617,6 +775,38 @@ export default function DailyAttendancePage() {
       remarks: item.remarks,
     }));
 
+    // If offline, ensure records are in IndexedDB and notify coach
+    if (!syncInfo.isOnline) {
+      if (user?._id) {
+        const targetSec = sections.find((s) => s._id === selectedSectionId);
+        const uniId = targetSec?.university?._id || targetSec?.university || '';
+        const bulkList = Object.entries(recordsMap).map(([sId, item]) => {
+          const studentObj = item.student || students.find((s) => s._id === sId);
+          return {
+            userId: user._id,
+            universityId: uniId,
+            sectionId: selectedSectionId,
+            date: selectedDate,
+            dayType,
+            holidayReason,
+            studentId: sId,
+            studentName: studentObj?.name || '',
+            rollNumber: studentObj?.rollNumber || '',
+            status: item.status,
+            remarks: item.remarks || '',
+          };
+        });
+
+        await attendanceDB.saveLocalRecordsBulk(bulkList).catch(() => {});
+        attendanceSyncService.refreshPendingCount(user._id);
+      }
+
+      setSuccess('Attendance marks saved offline on this device. All records will synchronize automatically with MongoDB once online.');
+      setSaving(false);
+      setTimeout(() => setSuccess(''), 5000);
+      return;
+    }
+
     try {
       await attendanceService.submitDailyAttendance({
         sectionId: selectedSectionId,
@@ -626,7 +816,23 @@ export default function DailyAttendancePage() {
         records: recordsPayload,
       });
 
-      setSuccess('Attendance submitted successfully');
+      // Cleanup local records for this day once confirmed by server
+      if (user?._id) {
+        try {
+          const localMarks = await attendanceDB.getLocalRecordsForDay(
+            user._id,
+            selectedSectionId,
+            selectedDate
+          );
+          const opIds = localMarks.map((m) => m.opId).filter(Boolean);
+          if (opIds.length > 0) {
+            await attendanceDB.deleteSyncedRecords(opIds);
+          }
+          attendanceSyncService.refreshPendingCount(user._id);
+        } catch {}
+      }
+
+      setSuccess('Attendance submitted and synchronized with server successfully');
       fetchDailySheet();
       setTimeout(() => setSuccess(''), 4000);
     } catch (err) {
@@ -705,30 +911,74 @@ export default function DailyAttendancePage() {
           </p>
         </div>
 
-        {/* Tab Switcher */}
-        <div className="flex items-center rounded-xl border border-slate-200 bg-white p-1 shadow-xs">
-          <button
-            onClick={() => setActiveTab('sheet')}
-            className={`flex items-center gap-2 rounded-lg px-3.5 py-2 text-xs font-semibold transition-colors cursor-pointer ${
-              activeTab === 'sheet'
-                ? 'bg-brand-700 text-white shadow-xs'
-                : 'text-slate-600 hover:text-slate-900'
-            }`}
-          >
-            <CalendarCheck className="h-4 w-4" />
-            <span>Mark Attendance</span>
-          </button>
-          <button
-            onClick={() => setActiveTab('audit')}
-            className={`flex items-center gap-2 rounded-lg px-3.5 py-2 text-xs font-semibold transition-colors cursor-pointer ${
-              activeTab === 'audit'
-                ? 'bg-brand-700 text-white shadow-xs'
-                : 'text-slate-600 hover:text-slate-900'
-            }`}
-          >
-            <History className="h-4 w-4" />
-            <span>Audit History</span>
-          </button>
+        {/* Sync Status Compact Indicator & Tab Switcher */}
+        <div className="flex flex-wrap items-center gap-2.5">
+          {syncInfo.isSyncing ? (
+            <div className="inline-flex items-center gap-1.5 rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-700 shadow-xs">
+              <Loader2 className="h-3.5 w-3.5 animate-spin text-blue-600" />
+              <span>Syncing {syncInfo.pendingCount || ''} changes...</span>
+            </div>
+          ) : !syncInfo.isOnline ? (
+            <div className="inline-flex items-center gap-1.5 rounded-full border border-slate-300 bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700 shadow-xs">
+              <WifiOff className="h-3.5 w-3.5 text-slate-500" />
+              <span>Offline — saved on device ({syncInfo.pendingCount})</span>
+            </div>
+          ) : syncInfo.pendingCount > 0 ? (
+            <div className="inline-flex items-center gap-1.5 rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-700 shadow-xs">
+              <Clock className="h-3.5 w-3.5 text-amber-600" />
+              <span>{syncInfo.pendingCount} pending sync</span>
+              <button
+                type="button"
+                onClick={() => attendanceSyncService.triggerManualSync(user?._id)}
+                className="ml-1 underline hover:text-amber-900 cursor-pointer"
+              >
+                Sync Now
+              </button>
+            </div>
+          ) : syncInfo.syncError ? (
+            <div className="inline-flex items-center gap-1.5 rounded-full border border-rose-200 bg-rose-50 px-3 py-1 text-xs font-semibold text-rose-700 shadow-xs">
+              <AlertCircle className="h-3.5 w-3.5 text-rose-600" />
+              <span>Sync issue</span>
+              <button
+                type="button"
+                onClick={() => attendanceSyncService.triggerManualSync(user?._id)}
+                className="ml-1 underline hover:text-rose-900 cursor-pointer"
+              >
+                Retry
+              </button>
+            </div>
+          ) : (
+            <div className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700 shadow-xs">
+              <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
+              <span>All changes synced</span>
+            </div>
+          )}
+
+          {/* Tab Switcher */}
+          <div className="flex items-center rounded-xl border border-slate-200 bg-white p-1 shadow-xs">
+            <button
+              onClick={() => setActiveTab('sheet')}
+              className={`flex items-center gap-2 rounded-lg px-3.5 py-2 text-xs font-semibold transition-colors cursor-pointer ${
+                activeTab === 'sheet'
+                  ? 'bg-brand-700 text-white shadow-xs'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <CalendarCheck className="h-4 w-4" />
+              <span>Mark Attendance</span>
+            </button>
+            <button
+              onClick={() => setActiveTab('audit')}
+              className={`flex items-center gap-2 rounded-lg px-3.5 py-2 text-xs font-semibold transition-colors cursor-pointer ${
+                activeTab === 'audit'
+                  ? 'bg-brand-700 text-white shadow-xs'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <History className="h-4 w-4" />
+              <span>Audit History</span>
+            </button>
+          </div>
         </div>
       </div>
 

@@ -13,6 +13,16 @@ export const attendanceService = {
     return response.data;
   },
 
+  async syncAttendanceBatch(data) {
+    const response = await api.post('/attendance/sync-batch', data);
+    return response.data;
+  },
+
+  async checkHealth() {
+    const response = await api.get('/health', { timeout: 4000 });
+    return response.data;
+  },
+
   async updateStudentRecord(recordId, data) {
     const response = await api.patch(`/attendance/records/${recordId}`, data);
     return response.data;

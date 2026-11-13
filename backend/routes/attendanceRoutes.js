@@ -9,11 +9,13 @@ const {
   getStudentAttendance,
   previewUniversityCalendar,
   applyUniversityCalendar,
+  syncAttendanceBatch,
 } = require('../controllers/attendanceController');
 const { protect } = require('../middleware/authMiddleware');
 
 router.get('/daily-sheet', protect, getDailySheet);
 router.post('/submit', protect, submitDailyAttendance);
+router.post('/sync-batch', protect, syncAttendanceBatch);
 router.patch('/records/:id', protect, updateStudentRecord);
 router.get('/audit-logs', protect, getAuditLogs);
 router.get('/history', protect, getSectionHistory);

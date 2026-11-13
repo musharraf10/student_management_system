@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, useEffect } from 'react';
 import authService from '../services/authService';
+import attendanceDB from '../services/attendanceDB';
 
 const AuthContext = createContext(null);
 
@@ -110,6 +111,9 @@ export function AuthProvider({ children }) {
   };
 
   const logout = () => {
+    if (user?._id) {
+      attendanceDB.clearUserData(user._id).catch(() => {});
+    }
     setUser(null);
     setToken(null);
     localStorage.removeItem('token');

@@ -428,6 +428,40 @@ const applyUniversityCalendar = asyncHandler(async (req, res) => {
   });
 });
 
+/**
+ * @desc    Batch synchronize offline attendance records with MongoDB
+ * @route   POST /api/attendance/sync-batch
+ * @access  Private (Super Admin OR Coach)
+ */
+const syncAttendanceBatch = asyncHandler(async (req, res) => {
+  const { batchId, records } = req.body;
+
+  if (!Array.isArray(records) || records.length === 0) {
+    return res.status(200).json({
+      success: true,
+      batchId: batchId || 'empty_batch',
+      totalProcessed: 0,
+      acknowledgedCount: 0,
+      failedCount: 0,
+      acknowledgedOpIds: [],
+      failedRecords: [],
+    });
+  }
+
+  const result = await attendanceService.syncAttendanceBatch({
+    userId: req.user._id,
+    userRole: req.user.role,
+    assignedSections: req.user.assignedSections || [],
+    records,
+  });
+
+  res.status(200).json({
+    success: true,
+    batchId: batchId || `batch_${Date.now()}`,
+    ...result,
+  });
+});
+
 module.exports = {
   getDailySheet,
   submitDailyAttendance,
@@ -437,4 +471,5 @@ module.exports = {
   getStudentAttendance,
   previewUniversityCalendar,
   applyUniversityCalendar,
+  syncAttendanceBatch,
 };
