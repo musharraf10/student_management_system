@@ -1,0 +1,160 @@
+@import url('https://fonts.googleapis.com/css2?family=Chivo:ital,wght@0,100..900;1,100..900&display=swap');
+@import "tailwindcss";
+
+/* Application Design System — Classic Academic Navy & Amber */
+@theme {
+  /* Primary Academic Navy & Neutral scale */
+  --color-brand-50: #f8fafc;
+  --color-brand-100: #f1f5f9; /* Neutral Slate-100 */
+  --color-brand-200: #e2e8f0; /* Neutral Slate-200 border */
+  --color-brand-300: #cbd5e1; /* Neutral Slate-300 */
+  --color-brand-400: #94a3b8; /* Subtle Slate-400 */
+  --color-brand-500: #64748b; /* Secondary Text Slate-500 */
+  --color-brand-600: #475569; /* Slate-600 */
+  --color-brand-700: #1e3a8a; /* Primary Academic Navy (Buttons, active states, key branding) */
+  --color-brand-800: #1e40af; /* Secondary Navy (Hover actions) */
+  --color-brand-900: #0f172a; /* Main Text Dark Slate-900 */
+  --color-brand-950: #020617; /* Deep Slate-950 */
+
+  /* Academic Navy Direct Aliases */
+  --color-navy-primary: #1e3a8a;
+  --color-navy-secondary: #1e40af;
+
+  /* Warm Amber Accent scale */
+  --color-amber-50: #fffbeb;
+  --color-amber-100: #fef3c7; /* Light Amber */
+  --color-amber-200: #fde68a;
+  --color-amber-300: #fcd34d;
+  --color-amber-400: #fbbf24;
+  --color-amber-500: #f59e0b; /* Warm Amber */
+  --color-amber-600: #d97706;
+  --color-amber-700: #b45309;
+
+  /* Attendance status colors */
+  --color-present: #16a34a;
+  --color-absent: #dc2626;
+  --color-late: #f59e0b;
+  --color-pending: #64748b;
+  --color-leave: #7c3aed;
+  --color-on-duty: #0f766e;
+  --color-online: #0891b2;
+
+  /* Typography: Chivo Font Family */
+  --font-sans: "Chivo", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-chivo: "Chivo", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+
+/* Global styles */
+* {
+  box-sizing: border-box;
+}
+
+@keyframes slideUp {
+  from {
+    transform: translateY(100%);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.animate-slide-up {
+  animation: slideUp 0.22s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.18s ease-out forwards;
+}
+
+html {
+  font-family: var(--font-sans);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  background-color: #f8fafc;
+  color: #0f172a;
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Typography Consistency for all elements across entire application */
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-sans);
+  letter-spacing: -0.015em;
+}
+
+button,
+input,
+select,
+textarea {
+  font-family: var(--font-sans);
+}
+
+table,
+th,
+td {
+  font-family: var(--font-sans);
+}
+
+/* Accessible focus indicator with Academic Navy */
+:focus-visible {
+  outline: 2px solid #1e3a8a;
+  outline-offset: 2px;
+}
+
+/* Text Selection in Light Amber & Navy */
+::selection {
+  background-color: #fef3c7;
+  color: #1e3a8a;
+}
+
+/* Smooth transitions helper */
+.transition-smooth {
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Custom scrollbars for clean UI */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #f1f5f9;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+/* Accessibility: Respect Reduced Motion preferences */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  ::before,
+  ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
