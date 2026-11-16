@@ -194,21 +194,21 @@ export default function SuperAdminDashboard() {
             </div>
 
             <div className="rounded-xl border border-brand-200 bg-white p-4 shadow-xs">
-              <span className="text-[11px] font-medium text-brand-500">Total Sections</span>
+              <span className="text-[11px] font-medium text-brand-500">Tot. Sec</span>
               <p className="mt-1 text-2xl font-bold text-brand-900">
                 {totals.sections || 0}
               </p>
             </div>
 
             <div className="rounded-xl border border-brand-200 bg-white p-4 shadow-xs">
-              <span className="text-[11px] font-medium text-brand-500">Success Coaches</span>
+              <span className="text-[11px] font-medium text-brand-500">SC's</span>
               <p className="mt-1 text-2xl font-bold text-brand-900">
                 {totals.coaches || 0}
               </p>
             </div>
 
             <div className="rounded-xl border border-brand-200 bg-white p-4 shadow-xs">
-              <span className="text-[11px] font-medium text-brand-500">Total Students</span>
+              <span className="text-[11px] font-medium text-brand-500">Students</span>
               <p className="mt-1 text-2xl font-bold text-brand-900">
                 {totals.students || 0}
               </p>
@@ -236,7 +236,7 @@ export default function SuperAdminDashboard() {
             </div>
 
             <div className="rounded-xl border border-brand-200 bg-white p-4 shadow-xs">
-              <span className="text-[11px] font-medium text-brand-500">Attendance Rate</span>
+              <span className="text-[11px] font-medium text-brand-500">Attendance %</span>
               <p className="mt-1 text-2xl font-bold text-brand-900">
                 {totals.attendancePercentage || 0}%
               </p>
